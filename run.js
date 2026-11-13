@@ -13,9 +13,12 @@
     }
 
     const quixelOnly = runMode === "quixel-megascans"
-    const REQUEST_INTERVAL_MS = 1500
+    const REQUEST_INTERVAL_MS = 1000
+    const LISTING_CONCURRENCY = 3
     const INITIAL_BACKOFF_MS = 30000
     const MAX_BACKOFF_MS = 5 * 60 * 1000
+    let nextRequestAt = 0
+    let rateLimitedUntil = 0
     const wait = async ms => {
         // 浏览器对单次定时器有上限，较长的 Retry-After 分段等待。
         const MAX_TIMER_MS = 2147483647
@@ -34,10 +37,15 @@
 
     // 同源请求由浏览器携带 Cookie，HTTP 错误交由调用方处理。
     const fetchFab = async (url, options = {}) => {
-        // 所有模式的商品搜索、状态、详情和入库请求都使用同一节奏。
-        await wait(REQUEST_INTERVAL_MS)
         let backoff = INITIAL_BACKOFF_MS
         while (true) {
+            // 并发任务共用发送间隔和限流截止时间，每次唤醒后重新检查。
+            let remaining = Math.max(nextRequestAt, rateLimitedUntil) - performance.now()
+            while (remaining > 0) {
+                await wait(remaining)
+                remaining = Math.max(nextRequestAt, rateLimitedUntil) - performance.now()
+            }
+            nextRequestAt = performance.now() + REQUEST_INTERVAL_MS
             const response = await fetch(url, {
                 ...options,
                 headers: { accept: "application/json, text/plain, */*", ...options.headers }
@@ -54,8 +62,9 @@
                 ? Number(retryAfter) * 1000
                 : Date.parse(retryAfter) - Date.now()
             const delay = Math.max(backoff, Number.isSafeInteger(serverDelay) ? serverDelay : 0)
-            console.warn(`Fab returned HTTP 429. Retrying this request in ${Math.ceil(delay / 1000)} seconds.`)
-            await wait(delay)
+            rateLimitedUntil = Math.max(rateLimitedUntil, performance.now() + delay)
+            const seconds = Math.ceil((rateLimitedUntil - performance.now()) / 1000)
+            console.warn(`Fab returned HTTP 429. Pausing new requests for at least ${seconds} seconds before retrying.`)
             backoff = Math.min(backoff * 2, MAX_BACKOFF_MS)
         }
     }
@@ -153,15 +162,15 @@
             // 先批量检查入库状态，已入库的商品跳过，保留账号现有的许可。
             const states = await listingsStateApi(csrftoken, uids)
             const countBeforePage = countMap[name]
-            // 逐个处理商品，单个商品失败时保留本页其他结果。
-            for (const uid of uids) {
+            // 单个商品失败时保留本页其他结果。
+            const processListing = async uid => {
                 try {
                     const acquired = states.get(uid)
-                    if (acquired === true) continue
+                    if (acquired === true) return
                     if (acquired !== false) throw new Error("Fab did not return a library state.")
                     // 查询未入库商品的详情，拿到免费报价后再提交入库。
                     const [offerId, type, title] = await listingsApi(uid)
-                    if (!offerId) continue
+                    if (!offerId) return
                     await addLibApi(csrftoken, uid, offerId)
                     countMap[name]++
                     console.log(`${name}: added ${title} (${type})`)
@@ -170,10 +179,18 @@
                     console.error(`${name}: ${uid} failed: ${error?.message ?? error}`)
                 }
             }
+            // 每页最多同时处理 3 件商品，完成一件后取下一件。
+            const pending = new Set(uids).values()
+            const worker = async () => {
+                for (let item = pending.next(); !item.done; item = pending.next()) {
+                    await processListing(item.value)
+                }
+            }
+            await Promise.all(Array.from({ length: Math.min(LISTING_CONCURRENCY, uids.length) }, worker))
             emptyPages = countMap[name] === countBeforePage ? emptyPages + 1 : 0
         } while (nextPage && (quixelOnly || !fastMode || emptyPages < MAX_EMPTY_PAGE))
     }
-    // 逐个扫描分类，一个请求因限流等待时，其他分类也暂缓发送请求。
+    // 逐个扫描分类，当前分类完成后再扫描下一个。
     let interrupted = 0
     for (const [name, url] of Object.entries(urls)) {
         try {
