@@ -13,10 +13,11 @@
     }
 
     const quixelOnly = runMode === "quixel-megascans"
-    const REQUEST_INTERVAL_MS = 1000
-    const LISTING_CONCURRENCY = 3
+    const REQUEST_INTERVAL_MS = 500
+    const MAX_CONCURRENT_LISTINGS = 3
     const INITIAL_BACKOFF_MS = 30000
     const MAX_BACKOFF_MS = 5 * 60 * 1000
+    const rateLimitCounts = { search: 0, states: 0, details: 0, "add-to-library": 0 }
     let nextRequestAt = 0
     let rateLimitedUntil = 0
     const wait = async ms => {
@@ -36,16 +37,19 @@
     }
 
     // 同源请求由浏览器携带 Cookie，HTTP 错误交由调用方处理。
-    const fetchFab = async (url, options = {}) => {
+    const fetchFab = async (endpoint, url, options = {}) => {
         let backoff = INITIAL_BACKOFF_MS
         while (true) {
-            // 并发任务共用发送间隔和限流截止时间，每次唤醒后重新检查。
-            let remaining = Math.max(nextRequestAt, rateLimitedUntil) - performance.now()
-            while (remaining > 0) {
+            // 并发任务错开发送时间，并共用限流暂停时间。
+            while (true) {
+                const now = performance.now()
+                const remaining = Math.max(nextRequestAt, rateLimitedUntil) - now
+                if (remaining <= 0) {
+                    nextRequestAt = now + REQUEST_INTERVAL_MS
+                    break
+                }
                 await wait(remaining)
-                remaining = Math.max(nextRequestAt, rateLimitedUntil) - performance.now()
             }
-            nextRequestAt = performance.now() + REQUEST_INTERVAL_MS
             const response = await fetch(url, {
                 ...options,
                 headers: { accept: "application/json, text/plain, */*", ...options.headers }
@@ -64,7 +68,8 @@
             const delay = Math.max(backoff, Number.isSafeInteger(serverDelay) ? serverDelay : 0)
             rateLimitedUntil = Math.max(rateLimitedUntil, performance.now() + delay)
             const seconds = Math.ceil((rateLimitedUntil - performance.now()) / 1000)
-            console.warn(`Fab returned HTTP 429. Pausing new requests for at least ${seconds} seconds before retrying.`)
+            rateLimitCounts[endpoint]++
+            console.warn(`Fab returned HTTP 429 (${endpoint}). Pausing new requests for at least ${seconds} seconds before retrying.`)
             backoff = Math.min(backoff * 2, MAX_BACKOFF_MS)
         }
     }
@@ -74,7 +79,7 @@
      * @returns {Promise<[string|null, string[]]>} 下一页游标和当前页的商品 ID。
      */
     const getItemsApi = async (next, url) => {
-        const response = await fetchFab(`${url}&cursor=${encodeURIComponent(next)}`)
+        const response = await fetchFab("search", `${url}&cursor=${encodeURIComponent(next)}`)
         const data = await response.json()
         if (!Array.isArray(data.results)) throw new Error("Fab did not return listing results.")
         return [data.cursors?.next ?? null, data.results.map(result => result.uid)]
@@ -86,7 +91,7 @@
     const addLibApi = async (token, uid, offerId) => {
         const body = new FormData()
         body.set("offer_id", offerId)
-        const response = await fetchFab(`https://www.fab.com/i/listings/${uid}/add-to-library`, {
+        const response = await fetchFab("add-to-library", `https://www.fab.com/i/listings/${uid}/add-to-library`, {
             headers: { "x-csrftoken": token, "x-requested-with": "XMLHttpRequest" },
             body,
             method: "POST"
@@ -98,7 +103,7 @@
      * 获取商品详情，读取入库所需的 offerId。
      */
     const listingsApi = async (uid) => {
-        const response = await fetchFab(`https://www.fab.com/i/listings/${uid}`)
+        const response = await fetchFab("details", `https://www.fab.com/i/listings/${uid}`)
         const data = await response.json()
         // 只考虑零价报价，优先选择专业版。
         const freeOffers = (data.licenses ?? []).filter(license => license?.priceTier?.price === 0 && license.offerId)
@@ -113,7 +118,7 @@
     const listingsStateApi = async (token, uids) => {
         if (!uids.length) return new Map()
         let uidParams = uids.map(uid => `listing_ids=${uid}`).join("&")
-        const response = await fetchFab(`https://www.fab.com/i/users/me/listings-states?${uidParams}`, {
+        const response = await fetchFab("states", `https://www.fab.com/i/users/me/listings-states?${uidParams}`, {
             headers: { "x-csrftoken": token, "x-requested-with": "XMLHttpRequest" }
         })
         const data = await response.json()
@@ -131,6 +136,8 @@
     }
 
     console.log("-> Start Process Items...")
+    const startedAt = performance.now()
+    let totalCount = 0
     // 常规快速模式连续 3 页未成功入库即停止，适合按时间倒序查看新资产。
     // Quixel Megascans 专用模式按商品类型排序，因此扫描全部结果页。
     const MAX_EMPTY_PAGE = 3
@@ -162,31 +169,33 @@
             // 先批量检查入库状态，已入库的商品跳过，保留账号现有的许可。
             const states = await listingsStateApi(csrftoken, uids)
             const countBeforePage = countMap[name]
-            // 单个商品失败时保留本页其他结果。
-            const processListing = async uid => {
-                try {
-                    const acquired = states.get(uid)
-                    if (acquired === true) return
-                    if (acquired !== false) throw new Error("Fab did not return a library state.")
-                    // 查询未入库商品的详情，拿到免费报价后再提交入库。
-                    const [offerId, type, title] = await listingsApi(uid)
-                    if (!offerId) return
-                    await addLibApi(csrftoken, uid, offerId)
-                    countMap[name]++
-                    console.log(`${name}: added ${title} (${type})`)
-                } catch (error) {
-                    itemFailures++
-                    console.error(`${name}: ${uid} failed: ${error?.message ?? error}`)
-                }
+            const reportListingError = (uid, error) => {
+                itemFailures++
+                console.error(`${name}: ${uid} failed: ${error?.message ?? error}`)
             }
-            // 每页最多同时处理 3 件商品，完成一件后取下一件。
-            const pending = new Set(uids).values()
+            const pending = [...new Set(uids)].filter(uid => {
+                const acquired = states.get(uid)
+                if (acquired === false) return true
+                if (acquired !== true) reportListingError(uid, "Fab did not return a library state.")
+                return false
+            })
+            const remainingListings = pending.values()
+            // 一个任务完成就取下一件商品，其他任务可以继续执行。
             const worker = async () => {
-                for (let item = pending.next(); !item.done; item = pending.next()) {
-                    await processListing(item.value)
+                for (const uid of remainingListings) {
+                    try {
+                        const [offerId, type, title] = await listingsApi(uid)
+                        if (!offerId) continue
+                        await addLibApi(csrftoken, uid, offerId)
+                        countMap[name]++
+                        totalCount++
+                        console.log(`${name}: added ${title} (${type})`)
+                    } catch (error) {
+                        reportListingError(uid, error)
+                    }
                 }
             }
-            await Promise.all(Array.from({ length: Math.min(LISTING_CONCURRENCY, uids.length) }, worker))
+            await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_LISTINGS, pending.length) }, worker))
             emptyPages = countMap[name] === countBeforePage ? emptyPages + 1 : 0
         } while (nextPage && (quixelOnly || !fastMode || emptyPages < MAX_EMPTY_PAGE))
     }
@@ -201,7 +210,10 @@
         }
     }
 
-    const totalCount = Object.values(countMap).reduce((sum, count) => sum + count, 0)
+    const elapsed = Math.max(0, performance.now() - startedAt)
+    const speed = elapsed > 0 ? totalCount * 60000 / elapsed : 0
+    console.info(`Average speed: ${speed.toFixed(1)} items/min over ${(elapsed / 1000).toFixed(1)} s, including retry waits.`)
+    console.info(`HTTP 429 by endpoint: ${Object.entries(rateLimitCounts).map(([endpoint, count]) => `${endpoint}=${count}`).join(", ")}.`)
     let countDetail = totalCount > 0 ?
         "(" + Object.entries(countMap).map(([key, value]) => `${key}:${value}`).join(" ") + ")"
         : ""

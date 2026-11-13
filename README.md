@@ -57,7 +57,9 @@ https://gh-proxy.com/raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/he
 
 ### 自动处理限流
 
-常规入库和 Quixel Megascans 单独入库每页最多同时处理 3 件商品，相邻请求的发出时间至少间隔 1 秒。收到 HTTP 429 后，脚本会暂停发送新请求，等待后自动重试被限流的请求。默认等待从 30 秒逐步增加到 5 分钟。Fab 通过 `Retry-After` 要求等待更久时，会遵循该时间。运行期间保持 Fab 标签页开启即可。
+常规入库和 Quixel Megascans 单独入库都最多同时处理 3 件商品，相邻请求的发出时间至少间隔 500 毫秒。收到 HTTP 429 后，脚本会暂停发送新请求，并在等待后自动重试。默认等待从 30 秒逐步增加到 5 分钟。Fab 通过 `Retry-After` 要求等待更久时，会遵循该时间。运行期间保持 Fab 标签页开启即可。
+
+运行结束后，日志会显示包含限流等待的平均入库速度，并按接口汇总 HTTP 429 次数。
 
 ### 鸣谢
 - https://gist.github.com/jamiephan/0c04986c7f2e62d5c87c4e8c8ce115fc
