@@ -14,7 +14,7 @@
     }
 
     const quixelOnly = runMode === "quixel-megascans"
-    const REQUEST_INTERVAL_MS = 500
+    const REQUEST_INTERVAL_MS = 200
     const MAX_CONCURRENT_LISTINGS = 3
     const INITIAL_BACKOFF_MS = 30000
     const MAX_BACKOFF_MS = 5 * 60 * 1000

@@ -46,7 +46,7 @@ The Method 3 setting applies to the next run only. Quixel Megascans mode scans e
 
 ### Automatic retries after rate limiting
 
-Both modes process up to three listings concurrently and start requests at least 500 milliseconds apart. When Fab returns HTTP 429, the script pauses new requests and automatically retries after waiting. The default delay grows from 30 seconds to five minutes, and the script honors longer waits specified by Fab's `Retry-After` header. Keep the Fab tab open while the scan runs.
+Both modes process up to three listings concurrently and start requests at least 200 milliseconds apart. When Fab returns HTTP 429, the script pauses new requests and automatically retries after waiting. The default delay grows from 30 seconds to five minutes, and the script honors longer waits specified by Fab's `Retry-After` header. Keep the Fab tab open while the scan runs.
 
 The bottom of the Tampermonkey panel shows the running total of added items, the average items added per minute, and a countdown during rate limits. The average includes time spent waiting. The completion log reports HTTP 429 counts by endpoint.
 
