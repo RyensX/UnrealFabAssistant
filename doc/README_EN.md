@@ -11,7 +11,7 @@ Automatically add all free resources from Fab to your account.(You can run it on
 #### Method 1
 1. Open Tampermonkey Settings-Utilities.
 2. Paste the following link in **Install from URL** to import.
-3. Open [Fab](https://www.fab.com/), click Start in the small window in the lower right corner, and wait for completion.
+3. Open [Fab](https://www.fab.com/) or the [Quixel Megascans seller page](https://www.fab.com/sellers/Quixel%20Megascans) and sign in. In the lower-right panel, click **Start work** for the standard scan or **Add Quixel Megascans** below it to add only that seller's free assets.
 ```javascript
 https://raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/tampermonkey.js
 ```
@@ -19,17 +19,30 @@ https://raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/tamp
 #### Method 2
 1. Open [Fab](https://www.fab.com/) and login.
 2. Click F12 to open the debugger and switch to the Console tab.
-3. Copy and paste the following code and press Enter to wait for the end.
+3. Paste the code below into the console and press Enter. It runs the standard scan by default. To add only Quixel Megascans assets, set `const mode` to `'quixel-megascans'`.
 ```javascript
-fetch('https://raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/run.js').then(r=>r.text()).then(t=>document.head.append(Object.assign(document.createElement('script'),{textContent:t})))
+(async () => {
+    const mode = 'all';
+    const response = await fetch('https://raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/run.js');
+    if (!response.ok) throw new Error(`Could not download run.js (HTTP ${response.status})`);
+    const source = await response.text();
+    if (mode === 'quixel-megascans' && !source.startsWith('// UnrealFabAssistant supports quixel-megascans')) {
+        throw new Error('The downloaded run.js does not support Quixel Megascans mode yet');
+    }
+    const script = document.createElement('script');
+    script.dataset.runMode = mode;
+    script.textContent = source;
+    document.head.appendChild(script);
+})();
 ```
 
 #### Method 3
-1. Open [run.js](/run.js) and copy all the code to the clipboard.
+1. Open the current [run.js](../run.js) and copy all of its code.
 2. Open [Fab](https://www.fab.com/) and login.
-4. Press F12 to open the debugger and switch to the Console tab.
-5. Paste the code you just copied into the input box and press Enter.
-6. Wait for the log to be printed  is complete.
+3. Press F12 and switch to the Console tab. To add only Quixel Megascans assets, first run `window.unrealFabAssistantMode = 'quixel-megascans'`.
+4. Paste the code you copied, press Enter, and wait for the completion log.
+
+The Method 3 setting applies to the next run only. Quixel Megascans mode scans every page of the seller's free assets and skips items already in your library. If Fab rate-limits a scan, wait a few minutes and run it again to pick up the remaining items.
 
 ### Known issues
 - Too many requests prompt "Too many requests".

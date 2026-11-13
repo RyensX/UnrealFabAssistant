@@ -11,7 +11,7 @@
 #### 方式1
 1. 打开油猴设置-实用工具
 2. 在**从URL安装**中粘贴以下链接导入
-3. 打开 [Fab](https://www.fab.com/)，右下角小窗点击Start，等待完成
+3. 打开 [Fab](https://www.fab.com/) 或 [Quixel Megascans 卖家页](https://www.fab.com/sellers/Quixel%20Megascans) 并登录。在右下角小窗点击 **Start work** 启动常规入库，或点击下方的 **Add Quixel Megascans** 单独入库该卖家的免费资产。
 ```javascript
 https://raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/tampermonkey.js
 ```
@@ -24,23 +24,36 @@ https://gh-proxy.com/raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/he
 #### 方式2
 1. 打开 [Fab](https://www.fab.com/) 并登录
 2. 点击F12打开调试工具并切换到控制台（Console）tab
-3. 复制粘贴下面代码回车等待结束
+3. 复制下面的代码到控制台运行。默认执行常规入库。只入库 Quixel Megascans 时，将 `const mode` 的值改成 `'quixel-megascans'`。
 ```javascript
-fetch('https://raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/run.js').then(r=>r.text()).then(t=>document.head.append(Object.assign(document.createElement('script'),{textContent:t})))
+(async () => {
+    const mode = 'all';
+    const response = await fetch('https://raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/run.js');
+    if (!response.ok) throw new Error(`下载 run.js 失败（HTTP ${response.status}）`);
+    const source = await response.text();
+    if (mode === 'quixel-megascans' && !source.startsWith('// UnrealFabAssistant supports quixel-megascans')) {
+        throw new Error('下载的 run.js 版本尚不支持 Quixel Megascans 模式');
+    }
+    const script = document.createElement('script');
+    script.dataset.runMode = mode;
+    script.textContent = source;
+    document.head.appendChild(script);
+})();
 ```
 
-如果无法访问魔法网络，可以用下方链接（更新可能有延迟）
+如果无法访问 GitHub，可以把上面代码中的下载地址换成下方代理地址。代理更新可能有延迟。
 
-```javascript
-fetch('https://gh-proxy.com/raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/run.js').then(r=>r.text()).then(t=>document.head.append(Object.assign(document.createElement('script'),{textContent:t})))
+```text
+https://gh-proxy.com/raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/run.js
 ```
 
 #### 方式3
-1. 打开[run.js](/run.js)复制全部代码到剪切板
+1. 打开当前版本的 [run.js](run.js)，复制全部代码。
 2. 打开 [Fab](https://www.fab.com/) 并登录
-4. 点击F12打开调试工具并切换到控制台（Console）tab
-5. 粘贴刚才复制的代码到输入框，然后回车
-6. 等待日志打印结束即完成入库
+3. 点击 F12 打开调试工具并切换到控制台（Console）。只入库 Quixel Megascans 时，先执行 `window.unrealFabAssistantMode = 'quixel-megascans'`。
+4. 粘贴刚才复制的代码，然后回车并等待日志打印结束。
+
+方式 3 的 Quixel Megascans 设置仅用于下一次运行。单独入库模式会扫描该卖家的全部免费资产结果页，跳过已入库的商品。如果日志显示请求被限流，等几分钟后重新运行即可从当前入库状态继续。
 
 ### 已知问题
 - 请求过多提示 "Too many requests."

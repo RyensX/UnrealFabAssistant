@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         UnrealFabAssistant
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  UnrealFabAssistan油猴脚本
 // @author       https://github.com/RyensX/UnrealFabAssistant
 // @match        https://www.fab.com/
 // @match        https://www.fab.com/*-*/
+// @match        https://www.fab.com/sellers/Quixel%20Megascans
+// @match        https://www.fab.com/*-*/sellers/Quixel%20Megascans
 // @grant        none
 // @license      GPL-3.0
 // ==/UserScript==
@@ -101,15 +103,15 @@
         height: '100%',
         backgroundColor: 'rgba(0, 0, 0, 0.9)',
         display: 'flex',
+        flexDirection: 'column',
+        gap: '10px',
         justifyContent: 'center',
         alignItems: 'center',
         backdropFilter: 'blur(2px)',
         zIndex: '1' // 确保在日志内容之上
     });
 
-    const startButton = document.createElement('button');
-    startButton.textContent = 'Start work';
-    startButton.style.cssText = `
+    const buttonStyle = `
         padding: 12px 24px;
         background: #4CAF50;
         color: white;
@@ -121,29 +123,53 @@
         transition: transform 0.1s, background 0.3s;
     `;
 
-    let isStart = false
-    // 点击开始
-    startButton.addEventListener('click', () => {
-        overlay.remove();
-        fetch('https://raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/run.js').then(r => r.text()).then(t => document.head.append(Object.assign(document.createElement('script'), { textContent: t })))
-        isStart = true
-    });
+    const loadError = document.createElement('div');
+    loadError.style.cssText = 'color: #ff9494; padding: 0 16px; text-align: center;';
+    loadError.setAttribute('role', 'alert');
+    loadError.hidden = true;
 
-    // 按钮交互效果
-    startButton.addEventListener('mouseover', () => {
-        startButton.style.background = '#45a049';
-    });
-    startButton.addEventListener('mouseout', () => {
-        startButton.style.background = '#4CAF50';
-    });
-    startButton.addEventListener('mousedown', () => {
-        startButton.style.transform = 'scale(0.95)';
-    });
-    startButton.addEventListener('mouseup', () => {
-        startButton.style.transform = 'scale(1)';
-    });
+    let isStart = false;
+    /* 创建两个入口共用的启动按钮 */
+    function createStartButton(label, runMode) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        button.style.cssText = buttonStyle;
+        // 按钮悬停样式。
+        button.addEventListener('mouseover', () => button.style.background = '#45a049');
+        button.addEventListener('mouseout', () => button.style.background = '#4CAF50');
+        // 点击后加载入库脚本，并将所选模式传给它。
+        button.addEventListener('click', async () => {
+            if (isStart) return;
+            isStart = true;
+            overlay.remove();
 
-    overlay.appendChild(startButton);
+            try {
+                const response = await fetch('https://raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/run.js');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const script = document.createElement('script');
+                script.dataset.runMode = runMode;
+                script.textContent = await response.text();
+                // 旧版脚本会忽略专用模式，检查通过后才注入页面。
+                if (runMode === 'quixel-megascans' && !script.textContent.startsWith('// UnrealFabAssistant supports quixel-megascans')) {
+                    throw new Error('Quixel Megascans mode is not available in the downloaded run.js.');
+                }
+                document.head.appendChild(script);
+            } catch (error) {
+                loadError.textContent = `Unable to load run.js: ${error.message}`;
+                loadError.hidden = false;
+                isStart = false;
+                logContent.prepend(overlay);
+            }
+        });
+        return button;
+    }
+
+    overlay.append(
+        createStartButton('Start work', 'all'),
+        createStartButton('Add Quixel Megascans', 'quixel-megascans'),
+        loadError
+    );
     logContent.appendChild(overlay);
 
     /* 保存原生方法 */

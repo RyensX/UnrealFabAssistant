@@ -1,4 +1,13 @@
+// UnrealFabAssistant supports quixel-megascans
+// 首行供油猴和控制台加载器检查版本兼容性。
 ((async (fastMode) => {
+    // 加载器通过 script 的 data-run-mode 指定模式，直接粘贴时读取一次性设置。
+    const injectedMode = document.currentScript?.dataset.runMode
+    const runMode = injectedMode ?? window.unrealFabAssistantMode ?? "all"
+    if (injectedMode == null) delete window.unrealFabAssistantMode
+    if (runMode !== "all" && runMode !== "quixel-megascans") {
+        return console.error(`Unknown UnrealFabAssistant mode: ${runMode}`)
+    }
     if (location.origin !== "https://www.fab.com") {
         return console.error("Open www.fab.com and sign in before running UnrealFabAssistant.")
     }
@@ -84,11 +93,15 @@
 
     console.log("-> Start Process Items...")
     // 常规快速模式连续 3 页未成功入库即停止，适合按时间倒序查看新资产。
+    // Quixel Megascans 专用模式按商品类型排序，因此扫描全部结果页。
     const MAX_EMPTY_PAGE = 3
     const countMap = {}
     let itemFailures = 0
 
-    const urls = {
+    const quixelOnly = runMode === "quixel-megascans"
+    const urls = quixelOnly ? {
+        "Quixel Megascans": "https://www.fab.com/i/listings/search?currency=USD&seller=Quixel%20Megascans&is_free=1&sort_by=listingTypeWeight"
+    } : {
         "UE": "https://www.fab.com/i/listings/search?channels=unreal-engine&is_free=1&sort_by=-createdAt",
         "Unity": "https://www.fab.com/i/listings/search?channels=unity&is_free=1&sort_by=-createdAt",
         "UEFN": "https://www.fab.com/i/listings/search?channels=uefn&is_free=1&sort_by=-createdAt",
@@ -133,7 +146,7 @@
             })
             if (rateLimited) throw rateLimited.reason
             emptyPages = countMap[name] === countBeforePage ? emptyPages + 1 : 0
-        } while (nextPage && (!fastMode || emptyPages < MAX_EMPTY_PAGE))
+        } while (nextPage && (quixelOnly || !fastMode || emptyPages < MAX_EMPTY_PAGE))
     })
     const scans = await Promise.allSettled(mainTasks)
     const interrupted = scans.filter((result, index) => {
