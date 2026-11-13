@@ -53,12 +53,11 @@ https://gh-proxy.com/raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/he
 3. 点击 F12 打开调试工具并切换到控制台（Console）。只入库 Quixel Megascans 时，先执行 `window.unrealFabAssistantMode = 'quixel-megascans'`。
 4. 粘贴刚才复制的代码，然后回车并等待日志打印结束。
 
-方式 3 的 Quixel Megascans 设置仅用于下一次运行。单独入库模式会扫描该卖家的全部免费资产结果页，跳过已入库的商品。如果日志显示请求被限流，等几分钟后重新运行即可从当前入库状态继续。
+方式 3 的 Quixel Megascans 设置仅用于下一次运行。单独入库模式会扫描该卖家的全部免费资产结果页，跳过已入库的商品。
 
-### 已知问题
-- 请求过多提示 "Too many requests."
-    - 如果已经完成所有入库则无需理会
-    - 如果没有，则等待几分钟，然后重试
+### 自动处理限流
+
+常规入库和 Quixel Megascans 单独入库都逐个发送请求，间隔至少 1.5 秒。收到 HTTP 429 后，脚本会暂停后续请求并自动重试当前请求，限流解除后继续原来的进度。默认等待从 30 秒逐步增加到 5 分钟。Fab 通过 `Retry-After` 要求等待更久时，会遵循该时间。运行期间保持 Fab 标签页开启即可。
 
 ### 鸣谢
 - https://gist.github.com/jamiephan/0c04986c7f2e62d5c87c4e8c8ce115fc

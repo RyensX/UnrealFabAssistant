@@ -12,6 +12,20 @@
         return console.error("Open www.fab.com and sign in before running UnrealFabAssistant.")
     }
 
+    const quixelOnly = runMode === "quixel-megascans"
+    const REQUEST_INTERVAL_MS = 1500
+    const INITIAL_BACKOFF_MS = 30000
+    const MAX_BACKOFF_MS = 5 * 60 * 1000
+    const wait = async ms => {
+        // 浏览器对单次定时器有上限，较长的 Retry-After 分段等待。
+        const MAX_TIMER_MS = 2147483647
+        while (ms > 0) {
+            const delay = Math.min(ms, MAX_TIMER_MS)
+            await new Promise(resolve => setTimeout(resolve, delay))
+            ms -= delay
+        }
+    }
+
     const getCookie = (name) => {
         const value = `; ${document.cookie}`;
         const parts = value.split(`; ${name}=`);
@@ -20,14 +34,30 @@
 
     // 同源请求由浏览器携带 Cookie，HTTP 错误交由调用方处理。
     const fetchFab = async (url, options = {}) => {
-        const response = await fetch(url, {
-            ...options,
-            headers: { accept: "application/json, text/plain, */*", ...options.headers }
-        })
-        if (!response.ok) {
-            throw Object.assign(new Error(`Fab returned HTTP ${response.status}`), { status: response.status })
+        // 所有模式的商品搜索、状态、详情和入库请求都使用同一节奏。
+        await wait(REQUEST_INTERVAL_MS)
+        let backoff = INITIAL_BACKOFF_MS
+        while (true) {
+            const response = await fetch(url, {
+                ...options,
+                headers: { accept: "application/json, text/plain, */*", ...options.headers }
+            })
+            if (response.ok) return response
+
+            if (response.status !== 429) {
+                throw new Error(`Fab returned HTTP ${response.status}`)
+            }
+
+            // 本地退避最多 5 分钟。Fab 给出更长的 Retry-After 时，按它的要求等待。
+            const retryAfter = response.headers.get("Retry-After")?.trim() ?? ""
+            const serverDelay = /^\d+$/.test(retryAfter)
+                ? Number(retryAfter) * 1000
+                : Date.parse(retryAfter) - Date.now()
+            const delay = Math.max(backoff, Number.isSafeInteger(serverDelay) ? serverDelay : 0)
+            console.warn(`Fab returned HTTP 429. Retrying this request in ${Math.ceil(delay / 1000)} seconds.`)
+            await wait(delay)
+            backoff = Math.min(backoff * 2, MAX_BACKOFF_MS)
         }
-        return response
     }
 
     /**
@@ -98,7 +128,6 @@
     const countMap = {}
     let itemFailures = 0
 
-    const quixelOnly = runMode === "quixel-megascans"
     const urls = quixelOnly ? {
         "Quixel Megascans": "https://www.fab.com/i/listings/search?currency=USD&seller=Quixel%20Megascans&is_free=1&sort_by=listingTypeWeight"
     } : {
@@ -108,8 +137,7 @@
         "Quixel": "https://www.fab.com/i/listings/search?currency=USD&seller=Quixel&sort_by=listingTypeWeight"
         //这里如果仅仅只需要其中一种类型资源，比如只需要UE的，那可以只保留UE的链接
     }
-    const entries = Object.entries(urls)
-    const mainTasks = entries.map(async ([name, url]) => {
+    const scan = async (name, url) => {
         console.log(`start by name=${name} url=${url}`)
         let nextPage = null
         let currentPageIndex = 1
@@ -125,35 +153,36 @@
             // 先批量检查入库状态，已入库的商品跳过，保留账号现有的许可。
             const states = await listingsStateApi(csrftoken, uids)
             const countBeforePage = countMap[name]
-            const tasks = uids.map(async uid => {
-                const acquired = states.get(uid)
-                if (acquired === true) return
-                if (acquired !== false) throw new Error("Fab did not return a library state.")
-                // 查询未入库商品的详情，拿到免费报价后再提交入库。
-                const [offerId, type, title] = await listingsApi(uid)
-                if (!offerId) return
-                await addLibApi(csrftoken, uid, offerId)
-                countMap[name]++
-                console.log(`${name}: added ${title} (${type})`)
-            })
-            // 单个商品失败时保留本页其他结果。遇到限流则停止当前扫描的后续分页。
-            const results = await Promise.allSettled(tasks)
-            const rateLimited = results.find(result => result.status === "rejected" && result.reason?.status === 429)
-            results.forEach((result, index) => {
-                if (result.status === "fulfilled") return
-                itemFailures++
-                console.error(`${name}: ${uids[index]} failed: ${result.reason?.message ?? result.reason}`)
-            })
-            if (rateLimited) throw rateLimited.reason
+            // 逐个处理商品，单个商品失败时保留本页其他结果。
+            for (const uid of uids) {
+                try {
+                    const acquired = states.get(uid)
+                    if (acquired === true) continue
+                    if (acquired !== false) throw new Error("Fab did not return a library state.")
+                    // 查询未入库商品的详情，拿到免费报价后再提交入库。
+                    const [offerId, type, title] = await listingsApi(uid)
+                    if (!offerId) continue
+                    await addLibApi(csrftoken, uid, offerId)
+                    countMap[name]++
+                    console.log(`${name}: added ${title} (${type})`)
+                } catch (error) {
+                    itemFailures++
+                    console.error(`${name}: ${uid} failed: ${error?.message ?? error}`)
+                }
+            }
             emptyPages = countMap[name] === countBeforePage ? emptyPages + 1 : 0
         } while (nextPage && (quixelOnly || !fastMode || emptyPages < MAX_EMPTY_PAGE))
-    })
-    const scans = await Promise.allSettled(mainTasks)
-    const interrupted = scans.filter((result, index) => {
-        if (result.status === "fulfilled") return false
-        console.error(`${entries[index][0]} scan stopped: ${result.reason?.message ?? result.reason}`)
-        return true
-    }).length
+    }
+    // 逐个扫描分类，一个请求因限流等待时，其他分类也暂缓发送请求。
+    let interrupted = 0
+    for (const [name, url] of Object.entries(urls)) {
+        try {
+            await scan(name, url)
+        } catch (error) {
+            interrupted++
+            console.error(`${name} scan stopped: ${error?.message ?? error}`)
+        }
+    }
 
     const totalCount = Object.values(countMap).reduce((sum, count) => sum + count, 0)
     let countDetail = totalCount > 0 ?

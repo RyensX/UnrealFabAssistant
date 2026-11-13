@@ -42,12 +42,11 @@ https://raw.githubusercontent.com/RyensX/UnrealFabAssistant/refs/heads/main/tamp
 3. Press F12 and switch to the Console tab. To add only Quixel Megascans assets, first run `window.unrealFabAssistantMode = 'quixel-megascans'`.
 4. Paste the code you copied, press Enter, and wait for the completion log.
 
-The Method 3 setting applies to the next run only. Quixel Megascans mode scans every page of the seller's free assets and skips items already in your library. If Fab rate-limits a scan, wait a few minutes and run it again to pick up the remaining items.
+The Method 3 setting applies to the next run only. Quixel Megascans mode scans every page of the seller's free assets and skips items already in your library.
 
-### Known issues
-- Too many requests prompt "Too many requests".
-- If all storage has been completed, ignore it.
-- If not, wait a few minutes and try again.
+### Automatic retries after rate limiting
+
+Both modes send one request at a time, at least 1.5 seconds apart. When Fab returns HTTP 429, the script pauses subsequent requests and automatically retries the current one until the rate limit clears. The default delay grows from 30 seconds to five minutes, and the script honors longer waits specified by Fab's `Retry-After` header. Keep the Fab tab open while the scan runs.
 
 ### Acknowledgements
 - https://gist.github.com/jamiephan/0c04986c7f2e62d5c87c4e8c8ce115fc
