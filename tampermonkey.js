@@ -78,20 +78,61 @@
         cursor: pointer;
         transition: opacity 0.2s;
     `;
-    closeBtn.onclick = () => logContainer.remove();
     closeBtn.onmouseover = () => closeBtn.style.opacity = '0.8';
     closeBtn.onmouseout = () => closeBtn.style.opacity = '1';
 
     controlBar.append(title, closeBtn);
     logContainer.appendChild(controlBar);
 
+    /* 在日志下方显示本次入库进度和限流状态 */
+    const progressBar = document.createElement('div');
+    progressBar.style.cssText = 'padding: 8px; border-top: 1px solid #444; flex-shrink: 0; font-variant-numeric: tabular-nums;';
+    progressBar.hidden = true;
+    const progressMetrics = document.createElement('div');
+    const rateLimitStatus = document.createElement('div');
+    rateLimitStatus.style.color = '#FFC107';
+    rateLimitStatus.hidden = true;
+    progressBar.append(progressMetrics, rateLimitStatus);
+
+    let progressTimer;
+    function trackProgress(script) {
+        let progress;
+        const render = () => {
+            const now = performance.now();
+            const elapsed = now - progress.startedAt;
+            const speed = elapsed > 0 ? progress.totalCount * 60000 / elapsed : 0;
+            progressMetrics.textContent = `Added: ${progress.totalCount} · Avg: ${speed.toFixed(1)} items/min`;
+            const seconds = Math.ceil((progress.rateLimitedUntil - now) / 1000);
+            rateLimitStatus.hidden = progress.finished || seconds <= 0;
+            rateLimitStatus.textContent = rateLimitStatus.hidden ? '' : `Rate limited · Retrying in ${seconds}s`;
+        };
+        script.addEventListener('unreal-fab-assistant-progress', event => {
+            progress = event.detail;
+            progressBar.hidden = false;
+            render();
+            if (progress.finished) {
+                clearInterval(progressTimer);
+                progressTimer = undefined;
+            } else if (progressTimer === undefined && logContainer.isConnected) {
+                progressTimer = setInterval(render, 1000);
+            }
+        });
+    }
+    closeBtn.onclick = () => {
+        clearInterval(progressTimer);
+        progressTimer = undefined;
+        logContainer.remove();
+    };
+
     /* 创建日志内容区域 */
     const logContent = document.createElement('div');
+    logContent.className = 'tm-log-content';
     logContent.style.overflowY = 'auto';
     logContent.style.flexGrow = '1';
     logContent.style.padding = '0 10px';
     logContent.style.position = 'relative'; // 新增定位上下文
     logContainer.appendChild(logContent);
+    logContainer.appendChild(progressBar);
 
     /* 添加日志区域遮罩层 */
     const overlay = document.createElement('div');
@@ -154,6 +195,7 @@
                 if (runMode === 'quixel-megascans' && !script.textContent.startsWith('// UnrealFabAssistant supports quixel-megascans')) {
                     throw new Error('Quixel Megascans mode is not available in the downloaded run.js.');
                 }
+                trackProgress(script);
                 document.head.appendChild(script);
             } catch (error) {
                 loadError.textContent = `Unable to load run.js: ${error.message}`;
@@ -250,22 +292,22 @@
         }
 
         /* 自定义滚动条 */
-        #tm-console-viewer > div:last-child::-webkit-scrollbar {
+        #tm-console-viewer > .tm-log-content::-webkit-scrollbar {
             width: 8px;
             height: 8px;
         }
-        #tm-console-viewer > div:last-child::-webkit-scrollbar-track {
+        #tm-console-viewer > .tm-log-content::-webkit-scrollbar-track {
             background: rgba(20, 20, 20, 0.3);
             border-radius: 4px;
         }
-        #tm-console-viewer > div:last-child::-webkit-scrollbar-thumb {
+        #tm-console-viewer > .tm-log-content::-webkit-scrollbar-thumb {
             background: rgba(100, 100, 100, 0.5);
             border-radius: 4px;
         }
-        #tm-console-viewer > div:last-child::-webkit-scrollbar-thumb:hover {
+        #tm-console-viewer > .tm-log-content::-webkit-scrollbar-thumb:hover {
             background: rgba(120, 120, 120, 0.6);
         }
-        #tm-console-viewer > div:last-child::-webkit-scrollbar-corner {
+        #tm-console-viewer > .tm-log-content::-webkit-scrollbar-corner {
             background: transparent;
         }
     `;

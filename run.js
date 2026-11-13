@@ -2,7 +2,8 @@
 // 首行供油猴和控制台加载器检查版本兼容性。
 ((async (fastMode) => {
     // 加载器通过 script 的 data-run-mode 指定模式，直接粘贴时读取一次性设置。
-    const injectedMode = document.currentScript?.dataset.runMode
+    const script = document.currentScript
+    const injectedMode = script?.dataset.runMode
     const runMode = injectedMode ?? window.unrealFabAssistantMode ?? "all"
     if (injectedMode == null) delete window.unrealFabAssistantMode
     if (runMode !== "all" && runMode !== "quixel-megascans") {
@@ -69,6 +70,7 @@
             rateLimitedUntil = Math.max(rateLimitedUntil, performance.now() + delay)
             const seconds = Math.ceil((rateLimitedUntil - performance.now()) / 1000)
             rateLimitCounts[endpoint]++
+            reportProgress()
             console.warn(`Fab returned HTTP 429 (${endpoint}). Pausing new requests for at least ${seconds} seconds before retrying.`)
             backoff = Math.min(backoff * 2, MAX_BACKOFF_MS)
         }
@@ -138,6 +140,13 @@
     console.log("-> Start Process Items...")
     const startedAt = performance.now()
     let totalCount = 0
+    // 油猴面板通过当前脚本元素接收进度。直接粘贴运行时使用控制台日志。
+    const reportProgress = (finished = false) => {
+        script?.dispatchEvent(new CustomEvent("unreal-fab-assistant-progress", {
+            detail: { totalCount, startedAt, rateLimitedUntil, finished }
+        }))
+    }
+    reportProgress()
     // 常规快速模式连续 3 页未成功入库即停止，适合按时间倒序查看新资产。
     // Quixel Megascans 专用模式按商品类型排序，因此扫描全部结果页。
     const MAX_EMPTY_PAGE = 3
@@ -189,6 +198,7 @@
                         await addLibApi(csrftoken, uid, offerId)
                         countMap[name]++
                         totalCount++
+                        reportProgress()
                         console.log(`${name}: added ${title} (${type})`)
                     } catch (error) {
                         reportListingError(uid, error)
@@ -210,6 +220,7 @@
         }
     }
 
+    reportProgress(true)
     const elapsed = Math.max(0, performance.now() - startedAt)
     const speed = elapsed > 0 ? totalCount * 60000 / elapsed : 0
     console.info(`Average speed: ${speed.toFixed(1)} items/min over ${(elapsed / 1000).toFixed(1)} s, including retry waits.`)
