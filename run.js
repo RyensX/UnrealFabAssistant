@@ -1,4 +1,7 @@
-((async (fastMode /** 快速模式：以时间降序查询物品，若超过3页都没有能添加的物品，则认为该分类已经没有新增的 */) => {
+((async (fastMode) => {
+    if (location.origin !== "https://www.fab.com") {
+        return console.error("Open www.fab.com and sign in before running UnrealFabAssistant.")
+    }
 
     const getCookie = (name) => {
         const value = `; ${document.cookie}`;
@@ -6,191 +9,146 @@
         if (parts.length === 2) return parts.pop().split(';').shift();
     }
 
-    /**
-     * 获取物品
-     * 
-     * @returns [next,[uid]]
-     */
-    const getItemsApi = async (cookies, next, url_base) => {
-        //const response = await fetch(`&cursor=${next}`, {
-        const response = await fetch(`${url_base}&cursor=${next}`, {
-            "headers": {
-                "accept": "application/json, text/plain, */*",
-                "cookie": cookies
-            },
-            "method": "GET",
+    // 同源请求由浏览器携带 Cookie，HTTP 错误交由调用方处理。
+    const fetchFab = async (url, options = {}) => {
+        const response = await fetch(url, {
+            ...options,
+            headers: { accept: "application/json, text/plain, */*", ...options.headers }
         })
-        let data = await response.json()
-        let nextPage = data.cursors?.next ?? null
-        let uidList = data.results?.map(result => result.uid) ?? []
-        //console.log(data.cursors.previous)
-        //console.log(`测试物品数据: ${JSON.stringify(data)}`)
-        return [nextPage, uidList]
+        if (!response.ok) {
+            throw Object.assign(new Error(`Fab returned HTTP ${response.status}`), { status: response.status })
+        }
+        return response
     }
 
     /**
-     * 添加到库
+     * 获取一页商品。
+     * @returns {Promise<[string|null, string[]]>} 下一页游标和当前页的商品 ID。
      */
-    const addLibApi = async (cookies, token, uid, offerId) => {
-        const response = await fetch(`https://www.fab.com/i/listings/${uid}/add-to-library`, {
-            "headers": {
-                "Cookies": cookies,
-                "accept": "application/json, text/plain, */*",
-                "accept-language": "en",
-                "content-type": "multipart/form-data; boundary=----WebKitFormBoundary1",
-                "priority": "u=1, i",
-                "sec-ch-ua": "\"Google Chrome\";v=\"135\", \"Not-A.Brand\";v=\"8\", \"Chromium\";v=\"135\"",
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": "\"Windows\"",
-                "sec-fetch-dest": "empty",
-                "sec-fetch-mode": "cors",
-                "sec-fetch-site": "same-origin",
-                "x-csrftoken": token,
-                "x-requested-with": "XMLHttpRequest"
-            },
-            "referrer": `https://www.fab.com/zh-cn/listings/${uid}`,
-            "referrerPolicy": "strict-origin-when-cross-origin",
-            "body": `------WebKitFormBoundary1\r\nContent-Disposition: form-data; name=\"offer_id\"\r\n\r\n${offerId}\r\n------WebKitFormBoundary1--\r\n`,
-            "method": "POST",
-            "mode": "cors",
-            "credentials": "include"
-        });
-        return response.status == 204
+    const getItemsApi = async (next, url) => {
+        const response = await fetchFab(`${url}&cursor=${encodeURIComponent(next)}`)
+        const data = await response.json()
+        if (!Array.isArray(data.results)) throw new Error("Fab did not return listing results.")
+        return [data.cursors?.next ?? null, data.results.map(result => result.uid)]
     }
 
     /**
-     * 获取详细信息，主要要取得offerId
+     * 添加到库。Fab 返回 HTTP 204 时计为成功。
      */
-    const listingsApi = async (cookies, token, uid) => {
-        const response = await fetch(`https://www.fab.com/i/listings/${uid}`, {
-            "headers": {
-                "accept": "application/json, text/plain, */*",
-                "cookie": cookies,
-                "referer": "https://www.fab.com/",
-                "x-csrftoken": token
-            },
-            "method": "GET",
+    const addLibApi = async (token, uid, offerId) => {
+        const body = new FormData()
+        body.set("offer_id", offerId)
+        const response = await fetchFab(`https://www.fab.com/i/listings/${uid}/add-to-library`, {
+            headers: { "x-csrftoken": token, "x-requested-with": "XMLHttpRequest" },
+            body,
+            method: "POST"
         })
-        let data = await response.json()
-        let title = data.title
-        let offerId = null
-        let type = null
-        //尽量专业版
-        if (data.licenses)
-            for (licenseInfo of data.licenses) {
-                if (licenseInfo.priceTier.price == 0.0) {
-                    offerId = licenseInfo.offerId
-                    type = licenseInfo.slug
-                    if (licenseInfo.slug == "professional") {
-                        break
-                    }
-                }
-            }
-        //console.log(`测试数据: ${JSON.stringify(data)}`)
-        return [offerId, type, title]
+        if (response.status !== 204) throw new Error(`Unexpected add-to-library response: HTTP ${response.status}`)
+    }
+
+    /**
+     * 获取商品详情，读取入库所需的 offerId。
+     */
+    const listingsApi = async (uid) => {
+        const response = await fetchFab(`https://www.fab.com/i/listings/${uid}`)
+        const data = await response.json()
+        // 只考虑零价报价，优先选择专业版。
+        const freeOffers = (data.licenses ?? []).filter(license => license?.priceTier?.price === 0 && license.offerId)
+        const offer = freeOffers.find(license => license.slug === "professional") ?? freeOffers.at(-1)
+        return [offer?.offerId, offer?.slug, data.title]
     }
 
 
     /**
-     * 获取许可状态
+     * 批量获取当前账号对这些商品的入库状态。
      */
-    const listingsStateApi = async (cookies, token, uids) => {
-        if (!Array.isArray(uids) || !uids.length)
-            return {}
+    const listingsStateApi = async (token, uids) => {
+        if (!uids.length) return new Map()
         let uidParams = uids.map(uid => `listing_ids=${uid}`).join("&")
-        const response = await fetch(`https://www.fab.com/i/users/me/listings-states?${uidParams}`, {
-            "headers": {
-                "cookie": cookies,
-                "accept": "application/json, text/plain, */*",
-                "x-csrftoken": token,
-                "x-requested-with": "XMLHttpRequest"
-            },
-            "referrer": "https://www.fab.com/",
-            "referrerPolicy": "strict-origin-when-cross-origin",
-            "body": null,
-            "method": "GET",
-            "mode": "cors",
-            "credentials": "include"
+        const response = await fetchFab(`https://www.fab.com/i/users/me/listings-states?${uidParams}`, {
+            headers: { "x-csrftoken": token, "x-requested-with": "XMLHttpRequest" }
         })
-        let data = await response.json()
-        return data.reduce((acc, item) => {
-            acc[item.uid] = item.acquired;
-            return acc;
-        }, {})
+        const data = await response.json()
+        return new Map(data.map(item => [item.uid, item.acquired]))
     }
 
     console.log("⭐ UnrealFabAssistant: Automatically add all free resources from Fab to your account")
     console.log("⭐ Powered by https://github.com/RyensX/UnrealFabAssistant")
 
-    // 获取cookies和xtoken
     console.log("-> Checking User Info...")
-    let csrftoken = ""
-    let cookies = document.cookie
-    try {
-        csrftoken = getCookie("fab_csrftoken") ?? "{}"
-        if (!csrftoken) {
-            return console.error("-> Error: cannot find csrftoken. Please login again.")
-        }
-    } catch (_) {
+    // 从 Cookie 读取入库请求所需的 CSRF token。
+    const csrftoken = getCookie("fab_csrftoken")
+    if (!csrftoken) {
         return console.error("-> Error: cannot find csrftoken. Please login again.")
     }
-    console.log(`cookies=${cookies}`)
-    console.log(`csrftoken=${csrftoken}`)
 
     console.log("-> Start Process Items...")
-    let totalCount = 0
+    // 常规快速模式连续 3 页未成功入库即停止，适合按时间倒序查看新资产。
     const MAX_EMPTY_PAGE = 3
-    let countMap = {}
+    const countMap = {}
+    let itemFailures = 0
 
-    let urls = {
+    const urls = {
         "UE": "https://www.fab.com/i/listings/search?channels=unreal-engine&is_free=1&sort_by=-createdAt",
         "Unity": "https://www.fab.com/i/listings/search?channels=unity&is_free=1&sort_by=-createdAt",
         "UEFN": "https://www.fab.com/i/listings/search?channels=uefn&is_free=1&sort_by=-createdAt",
         "Quixel": "https://www.fab.com/i/listings/search?currency=USD&seller=Quixel&sort_by=listingTypeWeight"
         //这里如果仅仅只需要其中一种类型资源，比如只需要UE的，那可以只保留UE的链接
     }
-    const mainTasks = Object.entries(urls).map(async ([name, url]) => {
+    const entries = Object.entries(urls)
+    const mainTasks = entries.map(async ([name, url]) => {
         console.log(`start by name=${name} url=${url}`)
         let nextPage = null
         let currentPageIndex = 1
-        let currentCount = 0
-        let lastPage = 0
+        let emptyPages = 0
+        countMap[name] = 0
+        const seenCursors = new Set()
         do {
-            lastPage++
-            const page = await getItemsApi(cookies, nextPage, url)
-            console.log(`${name} page=${currentPageIndex++}(${page[0]}) ,count=${page[1].length}`)
-            nextPage = page[0]
-            //先获取许可状态
-            const states = await listingsStateApi(cookies, csrftoken, page[1])
-            //获取详情
-            const tasks = page[1].map(async (uid) => {
-                //已入库的不再重复。不过如果需要自动更新许可类型（尽量换成专业版）可以把这个限制去掉
-                if (states[uid] == false) {
-                    const info = await listingsApi(cookies, csrftoken, uid)
-                    const [offerId, type, title] = info
-                    if (offerId != null) {
-                        console.log(`No.${currentCount} ${name} Item: name=${title} , offerId=${offerId}`)
-                        //入库
-                        const result = await addLibApi(cookies, csrftoken, uid, offerId)
-                        console.log(`addLib No.${currentCount} ${title} from ${name} result=${result} page=${page[0]} type=${type}`)
-                        if (result) {
-                            lastPage = 0
-                            currentCount++
-                        }
-                    }
-                }
+            if (seenCursors.has(nextPage)) throw new Error("Fab repeated a pagination cursor.")
+            seenCursors.add(nextPage)
+            const [cursor, uids] = await getItemsApi(nextPage, url)
+            nextPage = cursor
+            console.log(`${name} page ${currentPageIndex++}, ${uids.length} listings`)
+            // 先批量检查入库状态，已入库的商品跳过，保留账号现有的许可。
+            const states = await listingsStateApi(csrftoken, uids)
+            const countBeforePage = countMap[name]
+            const tasks = uids.map(async uid => {
+                const acquired = states.get(uid)
+                if (acquired === true) return
+                if (acquired !== false) throw new Error("Fab did not return a library state.")
+                // 查询未入库商品的详情，拿到免费报价后再提交入库。
+                const [offerId, type, title] = await listingsApi(uid)
+                if (!offerId) return
+                await addLibApi(csrftoken, uid, offerId)
+                countMap[name]++
+                console.log(`${name}: added ${title} (${type})`)
             })
-            await Promise.allSettled(tasks)
-            //break //测试用
-        } while ((!fastMode || lastPage < MAX_EMPTY_PAGE) && nextPage != null && nextPage != "")
-        console.log(`✅ ${name} done! ${currentCount} items added.`)
-        totalCount += currentCount
-        countMap[name] = currentCount
+            // 单个商品失败时保留本页其他结果。遇到限流则停止当前扫描的后续分页。
+            const results = await Promise.allSettled(tasks)
+            const rateLimited = results.find(result => result.status === "rejected" && result.reason?.status === 429)
+            results.forEach((result, index) => {
+                if (result.status === "fulfilled") return
+                itemFailures++
+                console.error(`${name}: ${uids[index]} failed: ${result.reason?.message ?? result.reason}`)
+            })
+            if (rateLimited) throw rateLimited.reason
+            emptyPages = countMap[name] === countBeforePage ? emptyPages + 1 : 0
+        } while (nextPage && (!fastMode || emptyPages < MAX_EMPTY_PAGE))
     })
-    await Promise.allSettled(mainTasks)
+    const scans = await Promise.allSettled(mainTasks)
+    const interrupted = scans.filter((result, index) => {
+        if (result.status === "fulfilled") return false
+        console.error(`${entries[index][0]} scan stopped: ${result.reason?.message ?? result.reason}`)
+        return true
+    }).length
 
+    const totalCount = Object.values(countMap).reduce((sum, count) => sum + count, 0)
     let countDetail = totalCount > 0 ?
         "(" + Object.entries(countMap).map(([key, value]) => `${key}:${value}`).join(" ") + ")"
         : ""
-    console.log(`\n✅ All done! ${totalCount}${countDetail} items added.`)
-})(console.fastMode ?? true))
+    if (interrupted || itemFailures) {
+        console.warn(`Finished with errors. ${totalCount}${countDetail} items added, ${itemFailures} listing errors, ${interrupted} interrupted scans.`)
+    } else {
+        console.log(`\n✅ All done! ${totalCount}${countDetail} items added.`)
+    }
+})(window.fastMode ?? console.fastMode ?? true))
