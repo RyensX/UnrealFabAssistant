@@ -148,13 +148,14 @@
     }
     reportProgress()
     // 常规快速模式连续 3 页未成功入库即停止，适合按时间倒序查看新资产。
-    // Quixel Megascans 专用模式按商品类型排序，因此扫描全部结果页。
+    // Quixel Megascans 专用模式始终扫描全部结果页。
     const MAX_EMPTY_PAGE = 3
     const countMap = {}
     let itemFailures = 0
 
     const urls = quixelOnly ? {
-        "Quixel Megascans": "https://www.fab.com/i/listings/search?currency=USD&seller=Quixel%20Megascans&is_free=1&sort_by=listingTypeWeight"
+        // 按创建时间排序可使用时间游标，避免商品类型排序在偏移量 5000 后回环。
+        "Quixel Megascans": "https://www.fab.com/i/listings/search?currency=USD&seller=Quixel%20Megascans&is_free=1&sort_by=-createdAt"
     } : {
         "UE": "https://www.fab.com/i/listings/search?channels=unreal-engine&is_free=1&sort_by=-createdAt",
         "Unity": "https://www.fab.com/i/listings/search?channels=unity&is_free=1&sort_by=-createdAt",
