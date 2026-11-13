@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnrealFabAssistant
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  UnrealFabAssistan油猴脚本
 // @author       https://github.com/RyensX/UnrealFabAssistant
 // @match        https://www.fab.com/
